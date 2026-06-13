@@ -1,0 +1,210 @@
+#include <iostream>
+#include <fstream>
+#include <vector>
+#include <string>
+#include <algorithm>
+#include <regex>
+#include <cstdlib>
+
+#ifdef _WIN32
+#define CLEAR "cls"
+#else
+#define CLEAR "clear"
+#endif
+
+class Editor {
+    std::string filename;
+    std::vector<std::string> lines;
+    bool modified;
+
+    void display() {
+        system(CLEAR);
+        std::cout << "--- " << (filename.empty() ? "untitled" : filename) << " --- Lines: " << lines.size() << std::endl;
+        for (size_t i = 0; i < lines.size(); ++i) {
+            std::cout << i+1 << " " << lines[i] << std::endl;
+        }
+        if (modified) std::cout << "[!] NOT SAVED" << std::endl;
+    }
+
+    void editLine(int num) {
+        if (num < 1 || num > (int)lines.size()) {
+            std::cout << "Invalid line number" << std::endl;
+            return;
+        }
+        int idx = num-1;
+        std::cout << num << "> " << lines[idx] << std::endl;
+        std::cout << "new content: ";
+        std::string newline;
+        std::cin.ignore();
+        std::getline(std::cin, newline);
+        if (lines[idx] != newline) {
+            lines[idx] = newline;
+            modified = true;
+        }
+    }
+
+    void insertLine(int pos) {
+        if (pos < 0 || pos > (int)lines.size()) {
+            std::cout << "Invalid position" << std::endl;
+            return;
+        }
+        std::cout << "insert text: ";
+        std::string newline;
+        std::getline(std::cin, newline);
+        lines.insert(lines.begin() + pos, newline);
+        modified = true;
+    }
+
+    void deleteLine(int num) {
+        if (num < 1 || num > (int)lines.size()) {
+            std::cout << "Invalid line number" << std::endl;
+            return;
+        }
+        lines.erase(lines.begin() + (num-1));
+        if (lines.empty()) lines.push_back("");
+        modified = true;
+    }
+
+    bool save(const std::string& fname) {
+        std::string outname = fname.empty() ? filename : fname;
+        if (outname.empty()) {
+            std::cout << "No filename. Use :w <filename>" << std::endl;
+            return false;
+        }
+        std::ofstream ofs(outname);
+        if (!ofs) {
+            std::cout << "Cannot write file" << std::endl;
+            return false;
+        }
+        for (size_t i = 0; i < lines.size(); ++i) {
+            ofs << lines[i];
+            if (i+1 < lines.size()) ofs << '\n';
+        }
+        filename = outname;
+        modified = false;
+        std::cout << "Saved." << std::endl;
+        return true;
+    }
+
+    void search(const std::string& pattern) {
+        try {
+            std::regex re(pattern);
+            bool found = false;
+            for (size_t i = 0; i < lines.size(); ++i) {
+                if (std::regex_search(lines[i], re)) {
+                    std::cout << i+1 << " " << lines[i] << std::endl;
+                    found = true;
+                }
+            }
+            if (!found) std::cout << "Not found" << std::endl;
+        } catch (std::regex_error& e) {
+            std::cout << "Regex error: " << e.what() << std::endl;
+        }
+    }
+
+    void replace(const std::string& pattern, const std::string& repl, bool globalFlag) {
+        try {
+            std::regex re(pattern);
+            bool changed = false;
+            for (auto& line : lines) {
+                std::string newline = std::regex_replace(line, re, repl);
+                if (newline != line) {
+                    line = newline;
+                    changed = true;
+                    if (!globalFlag) break;
+                }
+            }
+            if (changed) {
+                modified = true;
+                std::cout << "Replaced." << std::endl;
+            } else {
+                std::cout << "Pattern not found." << std::endl;
+            }
+        } catch (std::regex_error& e) {
+            std::cout << "Regex error: " << e.what() << std::endl;
+        }
+    }
+
+public:
+    Editor(const std::string& fname) : filename(fname), modified(false) {
+        if (!fname.empty()) {
+            std::ifstream ifs(fname);
+            if (ifs) {
+                std::string line;
+                while (std::getline(ifs, line)) {
+                    lines.push_back(line);
+                }
+            }
+        }
+        if (lines.empty()) lines.push_back("");
+    }
+
+    void run() {
+        display();
+        std::string cmd;
+        while (true) {
+            std::cout << "> ";
+            std::getline(std::cin, cmd);
+            if (cmd.empty()) { display(); continue; }
+            if (cmd[0] == ':') {
+                std::string rest = cmd.substr(1);
+                if (rest == "help") {
+                    std::cout << "Commands: :help, :list, :e <num>, :i <num>, :d <num>, :w [file], :q, :wq, :s/old/new/g, :/pattern" << std::endl;
+                } else if (rest == "list" || rest == "p") {
+                    display();
+                } else if (rest == "q") {
+                    if (modified) {
+                        std::cout << "Changes not saved. Quit anyway? (y/N) ";
+                        std::string ans;
+                        std::getline(std::cin, ans);
+                        if (ans != "y" && ans != "Y") continue;
+                    }
+                    std::cout << "Goodbye." << std::endl;
+                    break;
+                } else if (rest == "wq") {
+                    if (save("")) break;
+                } else if (rest.substr(0,2) == "w ") {
+                    save(rest.substr(2));
+                } else if (rest == "w") {
+                    save("");
+                } else if (rest.substr(0,2) == "e ") {
+                    int num = std::stoi(rest.substr(2));
+                    editLine(num);
+                } else if (rest.substr(0,2) == "i ") {
+                    int pos = std::stoi(rest.substr(2));
+                    insertLine(pos);
+                } else if (rest.substr(0,2) == "d ") {
+                    int num = std::stoi(rest.substr(2));
+                    deleteLine(num);
+                } else if (rest[0] == '/') {
+                    search(rest.substr(1));
+                } else if (rest.substr(0,2) == "s/") {
+                    std::regex s_regex("^s/(.*?)/(.*?)/(g?)$");
+                    std::smatch match;
+                    if (std::regex_match(rest, match, s_regex)) {
+                        replace(match[1].str(), match[2].str(), match[3].str() == "g");
+                    } else {
+                        std::cout << "Invalid syntax. Use :s/old/new/g" << std::endl;
+                    }
+                } else {
+                    std::cout << "Unknown command. :help" << std::endl;
+                }
+            } else {
+                // try parse number
+                try {
+                    int num = std::stoi(cmd);
+                    editLine(num);
+                } catch (...) {
+                    std::cout << "Unknown command. Type :help" << std::endl;
+                }
+            }
+        }
+    }
+};
+
+int main(int argc, char* argv[]) {
+    std::string filename = (argc > 1) ? argv[1] : "";
+    Editor editor(filename);
+    editor.run();
+    return 0;
+}
