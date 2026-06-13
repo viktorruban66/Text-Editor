@@ -1,0 +1,255 @@
+[package]
+name = "text_editor"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rustyline = "13.0"
+regex = "1.10"
+use rustyline::error::ReadlineError;
+use rustyline::Editor;
+use regex::Regex;
+use std::env;
+use std::fs;
+use std::io::{self, Write};
+
+const HELP_TEXT: &str = r#"
+Commands: :help, :list, :e <num>, :i <num>, :d <num>, :w [file], :q, :wq, :s/old/new/g, :/pattern
+"#;
+
+struct EditorState {
+    filename: Option<String>,
+    lines: Vec<String>,
+    modified: bool,
+}
+
+impl EditorState {
+    fn new(filename: Option<String>) -> Self {
+        let mut state = Self {
+            filename: filename.clone(),
+            lines: vec![String::new()],
+            modified: false,
+        };
+        if let Some(fname) = filename {
+            if let Ok(content) = fs::read_to_string(&fname) {
+                state.lines = content.lines().map(|s| s.to_string()).collect();
+                if state.lines.is_empty() { state.lines.push(String::new()); }
+            }
+        }
+        state
+    }
+
+    fn display(&self) {
+        print!("\x1B[2J\x1B[1;1H"); // clear screen (ANSI)
+        println!("--- {} --- Lines: {}", self.filename.as_deref().unwrap_or("untitled"), self.lines.len());
+        for (i, line) in self.lines.iter().enumerate() {
+            println!("{:3} {}", i+1, line);
+        }
+        if self.modified {
+            println!("[!] NOT SAVED");
+        }
+    }
+
+    fn edit_line(&mut self, num: usize) {
+        if num >= 1 && num <= self.lines.len() {
+            let idx = num-1;
+            println!("{}> {}", num, self.lines[idx]);
+            print!("new content: ");
+            io::stdout().flush().unwrap();
+            let mut new = String::new();
+            io::stdin().read_line(&mut new).unwrap();
+            let new = new.trim().to_string();
+            if self.lines[idx] != new {
+                self.lines[idx] = new;
+                self.modified = true;
+            }
+        } else {
+            println!("Invalid line number");
+        }
+    }
+
+    fn insert_line(&mut self, pos: usize) {
+        if pos >= 0 && pos <= self.lines.len() {
+            print!("insert text: ");
+            io::stdout().flush().unwrap();
+            let mut new = String::new();
+            io::stdin().read_line(&mut new).unwrap();
+            let new = new.trim().to_string();
+            self.lines.insert(pos, new);
+            self.modified = true;
+        } else {
+            println!("Invalid position");
+        }
+    }
+
+    fn delete_line(&mut self, num: usize) {
+        if num >= 1 && num <= self.lines.len() {
+            self.lines.remove(num-1);
+            if self.lines.is_empty() { self.lines.push(String::new()); }
+            self.modified = true;
+        } else {
+            println!("Invalid line number");
+        }
+    }
+
+    fn save(&mut self, filename: Option<String>) -> bool {
+        let fname = filename.or_else(|| self.filename.clone());
+        match fname {
+            Some(name) => {
+                let content = self.lines.join("\n");
+                if fs::write(&name, content).is_ok() {
+                    self.filename = Some(name);
+                    self.modified = false;
+                    println!("Saved.");
+                    true
+                } else {
+                    println!("Cannot write file");
+                    false
+                }
+            }
+            None => {
+                println!("No filename. Use :w <filename>");
+                false
+            }
+        }
+    }
+
+    fn search(&self, pattern: &str) {
+        match Regex::new(pattern) {
+            Ok(re) => {
+                let mut found = false;
+                for (i, line) in self.lines.iter().enumerate() {
+                    if re.is_match(line) {
+                        println!("{:3} {}", i+1, line);
+                        found = true;
+                    }
+                }
+                if !found { println!("Not found"); }
+            }
+            Err(e) => println!("Regex error: {}", e),
+        }
+    }
+
+    fn replace(&mut self, pattern: &str, repl: &str, global_flag: bool) {
+        match Regex::new(pattern) {
+            Ok(re) => {
+                let mut changed = false;
+                for line in &mut self.lines {
+                    let new_line = re.replace_all(line, repl).to_string();
+                    if new_line != *line {
+                        *line = new_line;
+                        changed = true;
+                        if !global_flag { break; }
+                    }
+                }
+                if changed {
+                    self.modified = true;
+                    println!("Replaced.");
+                } else {
+                    println!("Pattern not found.");
+                }
+            }
+            Err(e) => println!("Regex error: {}", e),
+        }
+    }
+
+    fn run(&mut self) {
+        let mut rl = Editor::<()>::new();
+        self.display();
+        loop {
+            let readline = rl.readline("> ");
+            match readline {
+                Ok(line) => {
+                    rl.add_history_entry(line.as_str());
+                    let cmd = line.trim();
+                    if cmd.is_empty() {
+                        self.display();
+                        continue;
+                    }
+                    if cmd.starts_with(':') {
+                        let parts: Vec<&str> = cmd[1..].split_whitespace().collect();
+                        if parts.is_empty() { continue; }
+                        match parts[0] {
+                            "help" => println!("{}", HELP_TEXT),
+                            "list" | "p" => self.display(),
+                            "q" => {
+                                if self.modified {
+                                    print!("Changes not saved. Quit anyway? (y/N) ");
+                                    io::stdout().flush().unwrap();
+                                    let mut ans = String::new();
+                                    io::stdin().read_line(&mut ans).unwrap();
+                                    if ans.trim().to_lowercase() != "y" { continue; }
+                                }
+                                println!("Goodbye.");
+                                break;
+                            }
+                            "wq" => {
+                                if self.save(None) { break; }
+                            }
+                            "w" => {
+                                let fname = if parts.len() > 1 { Some(parts[1].to_string()) } else { None };
+                                self.save(fname);
+                            }
+                            "e" => {
+                                if parts.len() == 2 {
+                                    if let Ok(num) = parts[1].parse::<usize>() {
+                                        self.edit_line(num);
+                                    } else { println!("Need a number"); }
+                                } else { println!("Usage: :e <num>"); }
+                            }
+                            "i" => {
+                                if parts.len() == 2 {
+                                    if let Ok(pos) = parts[1].parse::<usize>() {
+                                        self.insert_line(pos);
+                                    } else { println!("Need a number"); }
+                                } else { println!("Usage: :i <num>"); }
+                            }
+                            "d" => {
+                                if parts.len() == 2 {
+                                    if let Ok(num) = parts[1].parse::<usize>() {
+                                        self.delete_line(num);
+                                    } else { println!("Need a number"); }
+                                } else { println!("Usage: :d <num>"); }
+                            }
+                            _ => {
+                                if cmd.starts_with(":/") && cmd.len() > 2 {
+                                    self.search(&cmd[2..]);
+                                } else if cmd.starts_with(":s/") {
+                                    let re = Regex::new(r"^:s/(.*?)/(.*?)/(g?)$").unwrap();
+                                    if let Some(caps) = re.captures(cmd) {
+                                        self.replace(&caps[1], &caps[2], caps[3] == "g");
+                                    } else {
+                                        println!("Invalid syntax. Use :s/old/new/g");
+                                    }
+                                } else {
+                                    println!("Unknown command. Type :help");
+                                }
+                            }
+                        }
+                    } else {
+                        // try parse number
+                        if let Ok(num) = cmd.parse::<usize>() {
+                            self.edit_line(num);
+                        } else {
+                            println!("Unknown command. Type :help");
+                        }
+                    }
+                }
+                Err(ReadlineError::Interrupted) | Err(ReadlineError::Eof) => {
+                    println!("^C or ^D detected. Type :q to quit.");
+                }
+                Err(err) => {
+                    println!("Error: {:?}", err);
+                    break;
+                }
+            }
+        }
+    }
+}
+
+fn main() {
+    let args: Vec<String> = env::args().collect();
+    let filename = if args.len() > 1 { Some(args[1].clone()) } else { None };
+    let mut editor = EditorState::new(filename);
+    editor.run();
+}
