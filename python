@@ -1,0 +1,227 @@
+#!/usr/bin/env python3
+import sys
+import os
+import re
+from collections import deque
+
+# ANSI color codes
+COLOR_RESET = "\033[0m"
+COLOR_KEYWORD = "\033[36m"
+COLOR_STRING = "\033[32m"
+COLOR_COMMENT = "\033[33m"
+COLOR_NUMBER = "\033[35m"
+
+KEYWORDS = {
+    'c': {'int','char','if','else','while','for','return','include','void','struct'},
+    'python': {'def','import','from','if','elif','else','while','for','return','class','with','as'},
+    'java': {'public','private','protected','class','static','void','int','String','if','else'},
+    'go': {'func','var','const','type','if','else','for','range','return','package','import'},
+    'rust': {'fn','let','mut','if','else','while','for','loop','match','struct','enum','impl'},
+    'js': {'function','var','let','const','if','else','for','while','return','import','export'}
+}
+
+def detect_language(filename):
+    ext = os.path.splitext(filename)[1]
+    if ext in ('.c', '.h'): return 'c'
+    if ext in ('.py'): return 'python'
+    if ext in ('.java'): return 'java'
+    if ext in ('.go'): return 'go'
+    if ext in ('.rs'): return 'rust'
+    if ext in ('.js','.ts'): return 'js'
+    return None
+
+def highlight_line(line, lang):
+    if not lang or lang not in KEYWORDS: return line
+    kw = KEYWORDS[lang]
+    # очень простая подсветка: заменяем слова
+    for w in kw:
+        line = re.sub(rf'\b{w}\b', f'{COLOR_KEYWORD}{w}{COLOR_RESET}', line)
+    # строки
+    line = re.sub(r'(".*?"|\'.*?\')', f'{COLOR_STRING}\\1{COLOR_RESET}', line)
+    # комментарии //
+    line = re.sub(r'(//.*$)', f'{COLOR_COMMENT}\\1{COLOR_RESET}', line, flags=re.M)
+    # числа
+    line = re.sub(r'\b(\d+)\b', f'{COLOR_NUMBER}\\1{COLOR_RESET}', line)
+    return line
+
+class TextEditor:
+    def __init__(self, filename):
+        self.filename = filename
+        self.lines = []
+        self.modified = False
+        self.command_history = deque(maxlen=50)
+        self.history_index = 0
+        self.language = detect_language(filename) if filename else None
+        if filename and os.path.exists(filename):
+            with open(filename, 'r') as f:
+                self.lines = [line.rstrip('\n') for line in f]
+        else:
+            self.lines = [""]
+        self.show_help()
+
+    def show_help(self):
+        print("\n=== Text Editor (Python) ===")
+        print("Commands: :help, :list, :e <num>, :i <num>, :d <num>, :w [file], :q, :wq, :s/old/new/g, :/pattern")
+        print("Just press Enter to refresh view, or type a line number to edit.\n")
+
+    def display(self):
+        os.system('clear' if os.name == 'posix' else 'cls')
+        print(f"--- {self.filename or 'untitled'} --- Строк: {len(self.lines)}")
+        for i, line in enumerate(self.lines, 1):
+            hl = highlight_line(line, self.language) if self.language else line
+            print(f"{i:3} {hl}")
+        if self.modified:
+            print("[!] NOT SAVED")
+
+    def get_command(self):
+        # простая история (без readline, но для демо)
+        try:
+            cmd = input("> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return ":q"
+        self.command_history.append(cmd)
+        return cmd
+
+    def edit_line(self, num):
+        if 1 <= num <= len(self.lines):
+            print(f"{num}> {self.lines[num-1]}")
+            new = input("new content: ").strip()
+            if self.lines[num-1] != new:
+                self.lines[num-1] = new
+                self.modified = True
+        else:
+            print("Invalid line number")
+
+    def insert_line(self, num):
+        if 0 <= num <= len(self.lines):
+            new = input("insert text: ").strip()
+            self.lines.insert(num, new)
+            self.modified = True
+        else:
+            print("Invalid position")
+
+    def delete_line(self, num):
+        if 1 <= num <= len(self.lines):
+            del self.lines[num-1]
+            self.modified = True
+            if not self.lines:
+                self.lines = [""]
+        else:
+            print("Invalid line number")
+
+    def save(self, filename=None):
+        if filename is None:
+            filename = self.filename
+        if not filename:
+            print("No filename specified. Use :w <filename>")
+            return False
+        try:
+            with open(filename, 'w') as f:
+                f.write("\n".join(self.lines))
+            self.filename = filename
+            self.modified = False
+            print(f"Saved to {filename}")
+            return True
+        except Exception as e:
+            print(f"Save error: {e}")
+            return False
+
+    def search(self, pattern):
+        try:
+            regex = re.compile(pattern)
+            for i, line in enumerate(self.lines, 1):
+                if regex.search(line):
+                    hl = highlight_line(line, self.language) if self.language else line
+                    print(f"{i:3} {hl}")
+            if not any(regex.search(l) for l in self.lines):
+                print("Not found")
+        except re.error as e:
+            print(f"Invalid regex: {e}")
+
+    def replace(self, pattern, repl, global_flag):
+        try:
+            regex = re.compile(pattern)
+            modified = False
+            for i, line in enumerate(self.lines):
+                new_line = regex.sub(repl, line)
+                if new_line != line:
+                    self.lines[i] = new_line
+                    modified = True
+                    if not global_flag:
+                        break
+            if modified:
+                self.modified = True
+                print("Replacement done.")
+            else:
+                print("Pattern not found.")
+        except re.error as e:
+            print(f"Regex error: {e}")
+
+    def run(self):
+        self.display()
+        while True:
+            cmd = self.get_command()
+            if cmd == "":
+                self.display()
+                continue
+            if cmd[0] == ':':
+                parts = cmd[1:].split()
+                if not parts:
+                    continue
+                verb = parts[0]
+                if verb == "help":
+                    self.show_help()
+                elif verb == "list" or verb == "p":
+                    self.display()
+                elif verb == "q":
+                    if self.modified and input("Changes not saved. Quit anyway? (y/N) ").lower() != 'y':
+                        continue
+                    print("Goodbye.")
+                    break
+                elif verb == "wq":
+                    if self.save():
+                        break
+                elif verb == "w":
+                    if len(parts) > 1:
+                        self.save(parts[1])
+                    else:
+                        self.save()
+                elif verb == "e" and len(parts) == 2:
+                    try:
+                        self.edit_line(int(parts[1]))
+                    except ValueError:
+                        print("Need a number")
+                elif verb == "i" and len(parts) == 2:
+                    try:
+                        self.insert_line(int(parts[1]))
+                    except ValueError:
+                        print("Need a number")
+                elif verb == "d" and len(parts) == 2:
+                    try:
+                        self.delete_line(int(parts[1]))
+                    except ValueError:
+                        print("Need a number")
+                elif verb[0] == '/':
+                    self.search(verb[1:])
+                elif verb[0] == 's' and '/' in verb:
+                    # формат s/old/new/g
+                    m = re.match(r's/(.*?)/(.*?)/(g?)', verb)
+                    if m:
+                        _, old, new, flag = m.groups()
+                        self.replace(old, new, flag == 'g')
+                    else:
+                        print("Invalid replace syntax. Use :s/old/new/g")
+                else:
+                    print("Unknown command. :help")
+            else:
+                # просто номер строки для редактирования
+                try:
+                    num = int(cmd)
+                    self.edit_line(num)
+                except ValueError:
+                    print("Unknown command. Type :help")
+
+if __name__ == "__main__":
+    filename = sys.argv[1] if len(sys.argv) > 1 else None
+    editor = TextEditor(filename)
+    editor.run()
