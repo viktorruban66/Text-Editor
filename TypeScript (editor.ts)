@@ -1,0 +1,224 @@
+#!/usr/bin/env node
+import * as fs from 'fs';
+import * as readline from 'readline';
+
+const CLEAR = process.platform === 'win32' ? 'cls' : 'clear';
+
+class Editor {
+    private filename: string;
+    private lines: string[];
+    private modified: boolean;
+    private rl: readline.Interface;
+
+    constructor(filename: string) {
+        this.filename = filename;
+        this.lines = [""];
+        this.modified = false;
+        if (filename && fs.existsSync(filename)) {
+            const content = fs.readFileSync(filename, 'utf-8');
+            this.lines = content.split('\n');
+            if (this.lines.length === 0) this.lines = [""];
+        }
+        this.rl = readline.createInterface({
+            input: process.stdin,
+            output: process.stdout,
+            terminal: true
+        });
+    }
+
+    private display(): void {
+        console.clear();
+        console.log(`--- ${this.filename || 'untitled'} --- Lines: ${this.lines.length}`);
+        for (let i = 0; i < this.lines.length; i++) {
+            console.log(`${(i+1).toString().padStart(3)} ${this.lines[i]}`);
+        }
+        if (this.modified) console.log("[!] NOT SAVED");
+    }
+
+    private editLine(num: number): void {
+        if (num < 1 || num > this.lines.length) {
+            console.log("Invalid line number");
+            return;
+        }
+        const idx = num-1;
+        console.log(`${num}> ${this.lines[idx]}`);
+        this.rl.question("new content: ", (newLine) => {
+            if (this.lines[idx] !== newLine) {
+                this.lines[idx] = newLine;
+                this.modified = true;
+            }
+            this.promptLoop();
+        });
+    }
+
+    private insertLine(pos: number): void {
+        if (pos < 0 || pos > this.lines.length) {
+            console.log("Invalid position");
+            this.promptLoop();
+            return;
+        }
+        this.rl.question("insert text: ", (newLine) => {
+            this.lines.splice(pos, 0, newLine);
+            this.modified = true;
+            this.promptLoop();
+        });
+    }
+
+    private deleteLine(num: number): void {
+        if (num < 1 || num > this.lines.length) {
+            console.log("Invalid line number");
+            this.promptLoop();
+            return;
+        }
+        this.lines.splice(num-1, 1);
+        if (this.lines.length === 0) this.lines = [""];
+        this.modified = true;
+        this.promptLoop();
+    }
+
+    private save(filename?: string): boolean {
+        const outName = filename || this.filename;
+        if (!outName) {
+            console.log("No filename. Use :w <filename>");
+            return false;
+        }
+        try {
+            fs.writeFileSync(outName, this.lines.join('\n'), 'utf-8');
+            this.filename = outName;
+            this.modified = false;
+            console.log("Saved.");
+            return true;
+        } catch(e) {
+            console.log("Save error:", e);
+            return false;
+        }
+    }
+
+    private search(pattern: string): void {
+        try {
+            const re = new RegExp(pattern);
+            let found = false;
+            for (let i = 0; i < this.lines.length; i++) {
+                if (re.test(this.lines[i])) {
+                    console.log(`${i+1} ${this.lines[i]}`);
+                    found = true;
+                }
+            }
+            if (!found) console.log("Not found");
+        } catch(e) {
+            console.log("Regex error:", e);
+        }
+        this.promptLoop();
+    }
+
+    private replace(pattern: string, repl: string, globalFlag: boolean): void {
+        try {
+            const re = new RegExp(pattern, globalFlag ? 'g' : '');
+            let changed = false;
+            for (let i = 0; i < this.lines.length; i++) {
+                const newLine = this.lines[i].replace(re, repl);
+                if (newLine !== this.lines[i]) {
+                    this.lines[i] = newLine;
+                    changed = true;
+                    if (!globalFlag) break;
+                }
+            }
+            if (changed) {
+                this.modified = true;
+                console.log("Replaced.");
+            } else {
+                console.log("Pattern not found.");
+            }
+        } catch(e) {
+            console.log("Regex error:", e);
+        }
+        this.promptLoop();
+    }
+
+    private promptLoop(): void {
+        this.rl.question("> ", (cmd) => {
+            if (cmd === "") {
+                this.display();
+                this.promptLoop();
+                return;
+            }
+            if (cmd.startsWith(":")) {
+                const rest = cmd.slice(1).trim();
+                if (rest === "help") {
+                    console.log("Commands: :help, :list, :e <num>, :i <num>, :d <num>, :w [file], :q, :wq, :s/old/new/g, :/pattern");
+                    this.promptLoop();
+                } else if (rest === "list" || rest === "p") {
+                    this.display();
+                    this.promptLoop();
+                } else if (rest === "q") {
+                    if (this.modified) {
+                        this.rl.question("Changes not saved. Quit anyway? (y/N) ", (ans) => {
+                            if (ans.toLowerCase() === 'y') {
+                                console.log("Goodbye.");
+                                this.rl.close();
+                                process.exit(0);
+                            } else this.promptLoop();
+                        });
+                    } else {
+                        console.log("Goodbye.");
+                        this.rl.close();
+                        process.exit(0);
+                    }
+                } else if (rest === "wq") {
+                    if (this.save()) {
+                        console.log("Goodbye.");
+                        this.rl.close();
+                        process.exit(0);
+                    } else this.promptLoop();
+                } else if (rest.startsWith("w ")) {
+                    this.save(rest.slice(2));
+                    this.promptLoop();
+                } else if (rest === "w") {
+                    this.save();
+                    this.promptLoop();
+                } else if (rest.startsWith("e ")) {
+                    const num = parseInt(rest.slice(2));
+                    if (!isNaN(num)) this.editLine(num);
+                    else { console.log("Need a number"); this.promptLoop(); }
+                } else if (rest.startsWith("i ")) {
+                    const pos = parseInt(rest.slice(2));
+                    if (!isNaN(pos)) this.insertLine(pos);
+                    else { console.log("Need a number"); this.promptLoop(); }
+                } else if (rest.startsWith("d ")) {
+                    const num = parseInt(rest.slice(2));
+                    if (!isNaN(num)) this.deleteLine(num);
+                    else { console.log("Need a number"); this.promptLoop(); }
+                } else if (rest.startsWith("/")) {
+                    this.search(rest.slice(1));
+                } else if (rest.startsWith("s/")) {
+                    const match = rest.match(/^s\/(.*?)\/(.*?)\/(g?)$/);
+                    if (match) {
+                        this.replace(match[1], match[2], match[3] === 'g');
+                    } else {
+                        console.log("Invalid syntax. Use :s/old/new/g");
+                        this.promptLoop();
+                    }
+                } else {
+                    console.log("Unknown command. :help");
+                    this.promptLoop();
+                }
+            } else {
+                const num = parseInt(cmd);
+                if (!isNaN(num)) this.editLine(num);
+                else {
+                    console.log("Unknown command. Type :help");
+                    this.promptLoop();
+                }
+            }
+        });
+    }
+
+    start(): void {
+        this.display();
+        this.promptLoop();
+    }
+}
+
+const filename = process.argv[2] || "";
+const editor = new Editor(filename);
+editor.start();
