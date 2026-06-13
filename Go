@@ -1,0 +1,239 @@
+package main
+
+import (
+    "bufio"
+    "fmt"
+    "io/ioutil"
+    "os"
+    "regexp"
+    "strconv"
+    "strings"
+    "github.com/chzyer/readline"
+)
+
+type Editor struct {
+    filename string
+    lines    []string
+    modified bool
+}
+
+func NewEditor(filename string) *Editor {
+    e := &Editor{filename: filename, lines: []string{""}}
+    if filename != "" {
+        data, err := ioutil.ReadFile(filename)
+        if err == nil {
+            content := string(data)
+            if content != "" {
+                e.lines = strings.Split(strings.TrimRight(content, "\n"), "\n")
+            }
+            if len(e.lines) == 0 {
+                e.lines = []string{""}
+            }
+        }
+    }
+    return e
+}
+
+func (e *Editor) display() {
+    fmt.Print("\033[2J\033[1;1H") // clear screen
+    name := e.filename
+    if name == "" { name = "untitled" }
+    fmt.Printf("--- %s --- Lines: %d\n", name, len(e.lines))
+    for i, line := range e.lines {
+        fmt.Printf("%3d %s\n", i+1, line)
+    }
+    if e.modified {
+        fmt.Println("[!] NOT SAVED")
+    }
+}
+
+func (e *Editor) editLine(num int) {
+    if num < 1 || num > len(e.lines) {
+        fmt.Println("Invalid line number")
+        return
+    }
+    idx := num - 1
+    fmt.Printf("%d> %s\n", num, e.lines[idx])
+    fmt.Print("new content: ")
+    reader := bufio.NewReader(os.Stdin)
+    new, _ := reader.ReadString('\n')
+    new = strings.TrimRight(new, "\r\n")
+    if e.lines[idx] != new {
+        e.lines[idx] = new
+        e.modified = true
+    }
+}
+
+func (e *Editor) insertLine(pos int) {
+    if pos < 0 || pos > len(e.lines) {
+        fmt.Println("Invalid position")
+        return
+    }
+    fmt.Print("insert text: ")
+    reader := bufio.NewReader(os.Stdin)
+    new, _ := reader.ReadString('\n')
+    new = strings.TrimRight(new, "\r\n")
+    e.lines = append(e.lines[:pos], append([]string{new}, e.lines[pos:]...)...)
+    e.modified = true
+}
+
+func (e *Editor) deleteLine(num int) {
+    if num < 1 || num > len(e.lines) {
+        fmt.Println("Invalid line number")
+        return
+    }
+    idx := num - 1
+    e.lines = append(e.lines[:idx], e.lines[idx+1:]...)
+    if len(e.lines) == 0 { e.lines = []string{""} }
+    e.modified = true
+}
+
+func (e *Editor) save(filename string) bool {
+    if filename == "" {
+        filename = e.filename
+    }
+    if filename == "" {
+        fmt.Println("No filename. Use :w <filename>")
+        return false
+    }
+    content := strings.Join(e.lines, "\n")
+    err := ioutil.WriteFile(filename, []byte(content), 0644)
+    if err != nil {
+        fmt.Println("Save error:", err)
+        return false
+    }
+    e.filename = filename
+    e.modified = false
+    fmt.Println("Saved.")
+    return true
+}
+
+func (e *Editor) search(pattern string) {
+    re, err := regexp.Compile(pattern)
+    if err != nil {
+        fmt.Println("Regex error:", err)
+        return
+    }
+    found := false
+    for i, line := range e.lines {
+        if re.MatchString(line) {
+            fmt.Printf("%3d %s\n", i+1, line)
+            found = true
+        }
+    }
+    if !found { fmt.Println("Not found") }
+}
+
+func (e *Editor) replace(pattern, repl string, globalFlag bool) {
+    re, err := regexp.Compile(pattern)
+    if err != nil {
+        fmt.Println("Regex error:", err)
+        return
+    }
+    changed := false
+    for i, line := range e.lines {
+        newLine := re.ReplaceAllString(line, repl)
+        if newLine != line {
+            e.lines[i] = newLine
+            changed = true
+            if !globalFlag { break }
+        }
+    }
+    if changed {
+        e.modified = true
+        fmt.Println("Replaced.")
+    } else {
+        fmt.Println("Pattern not found.")
+    }
+}
+
+func (e *Editor) run() {
+    rl, err := readline.New("> ")
+    if err != nil { panic(err) }
+    defer rl.Close()
+    e.display()
+    for {
+        line, err := rl.Readline()
+        if err != nil { // EOF or interrupt
+            break
+        }
+        cmd := strings.TrimSpace(line)
+        if cmd == "" {
+            e.display()
+            continue
+        }
+        if strings.HasPrefix(cmd, ":") {
+            parts := strings.Fields(cmd[1:])
+            if len(parts) == 0 { continue }
+            switch parts[0] {
+            case "help":
+                fmt.Println(`
+Commands: :help, :list, :e <num>, :i <num>, :d <num>, :w [file], :q, :wq, :s/old/new/g, :/pattern`)
+            case "list", "p":
+                e.display()
+            case "q":
+                if e.modified {
+                    fmt.Print("Changes not saved. Quit anyway? (y/N) ")
+                    var ans string
+                    fmt.Scanln(&ans)
+                    if strings.ToLower(ans) != "y" { continue }
+                }
+                fmt.Println("Goodbye.")
+                return
+            case "wq":
+                if e.save("") { return }
+            case "w":
+                fname := ""
+                if len(parts) > 1 { fname = parts[1] }
+                e.save(fname)
+            case "e":
+                if len(parts) == 2 {
+                    if num, err := strconv.Atoi(parts[1]); err == nil {
+                        e.editLine(num)
+                    } else { fmt.Println("Need a number") }
+                } else { fmt.Println("Usage: :e <num>") }
+            case "i":
+                if len(parts) == 2 {
+                    if pos, err := strconv.Atoi(parts[1]); err == nil {
+                        e.insertLine(pos)
+                    } else { fmt.Println("Need a number") }
+                } else { fmt.Println("Usage: :i <num>") }
+            case "d":
+                if len(parts) == 2 {
+                    if num, err := strconv.Atoi(parts[1]); err == nil {
+                        e.deleteLine(num)
+                    } else { fmt.Println("Need a number") }
+                } else { fmt.Println("Usage: :d <num>") }
+            default:
+                if strings.HasPrefix(cmd, ":/") && len(cmd) > 2 {
+                    e.search(cmd[2:])
+                } else if strings.HasPrefix(cmd, ":s/") {
+                    re := regexp.MustCompile(`^:s/(.*?)/(.*?)/(g?)$`)
+                    matches := re.FindStringSubmatch(cmd)
+                    if len(matches) == 4 {
+                        e.replace(matches[1], matches[2], matches[3] == "g")
+                    } else {
+                        fmt.Println("Invalid syntax. Use :s/old/new/g")
+                    }
+                } else {
+                    fmt.Println("Unknown command. Type :help")
+                }
+            }
+        } else {
+            if num, err := strconv.Atoi(cmd); err == nil {
+                e.editLine(num)
+            } else {
+                fmt.Println("Unknown command. Type :help")
+            }
+        }
+    }
+}
+
+func main() {
+    filename := ""
+    if len(os.Args) > 1 {
+        filename = os.Args[1]
+    }
+    editor := NewEditor(filename)
+    editor.run()
+}
