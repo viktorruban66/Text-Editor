@@ -1,0 +1,258 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Text.RegularExpressions;
+
+namespace TextEditor
+{
+    class Editor
+    {
+        private string filename;
+        private List<string> lines;
+        private bool modified;
+
+        public Editor(string filename)
+        {
+            this.filename = filename;
+            lines = new List<string>();
+            if (!string.IsNullOrEmpty(filename) && File.Exists(filename))
+            {
+                lines.AddRange(File.ReadAllLines(filename));
+            }
+            if (lines.Count == 0) lines.Add("");
+        }
+
+        private void Display()
+        {
+            Console.Clear();
+            Console.WriteLine($"--- {(string.IsNullOrEmpty(filename) ? "untitled" : filename)} --- Lines: {lines.Count}");
+            for (int i = 0; i < lines.Count; i++)
+            {
+                Console.WriteLine($"{i+1,3} {lines[i]}");
+            }
+            if (modified) Console.WriteLine("[!] NOT SAVED");
+        }
+
+        private void EditLine(int num)
+        {
+            if (num < 1 || num > lines.Count)
+            {
+                Console.WriteLine("Invalid line number");
+                return;
+            }
+            int idx = num-1;
+            Console.WriteLine($"{num}> {lines[idx]}");
+            Console.Write("new content: ");
+            string newLine = Console.ReadLine();
+            if (lines[idx] != newLine)
+            {
+                lines[idx] = newLine;
+                modified = true;
+            }
+        }
+
+        private void InsertLine(int pos)
+        {
+            if (pos < 0 || pos > lines.Count)
+            {
+                Console.WriteLine("Invalid position");
+                return;
+            }
+            Console.Write("insert text: ");
+            string newLine = Console.ReadLine();
+            lines.Insert(pos, newLine);
+            modified = true;
+        }
+
+        private void DeleteLine(int num)
+        {
+            if (num < 1 || num > lines.Count)
+            {
+                Console.WriteLine("Invalid line number");
+                return;
+            }
+            lines.RemoveAt(num-1);
+            if (lines.Count == 0) lines.Add("");
+            modified = true;
+        }
+
+        private bool Save(string fname)
+        {
+            string outName = string.IsNullOrEmpty(fname) ? filename : fname;
+            if (string.IsNullOrEmpty(outName))
+            {
+                Console.WriteLine("No filename. Use :w <filename>");
+                return false;
+            }
+            try
+            {
+                File.WriteAllLines(outName, lines);
+                filename = outName;
+                modified = false;
+                Console.WriteLine("Saved.");
+                return true;
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine($"Save error: {e.Message}");
+                return false;
+            }
+        }
+
+        private void Search(string pattern)
+        {
+            try
+            {
+                Regex re = new Regex(pattern);
+                bool found = false;
+                for (int i = 0; i < lines.Count; i++)
+                {
+                    if (re.IsMatch(lines[i]))
+                    {
+                        Console.WriteLine($"{i+1} {lines[i]}");
+                        found = true;
+                    }
+                }
+                if (!found) Console.WriteLine("Not found");
+            }
+            catch (ArgumentException e)
+            {
+                Console.WriteLine($"Regex error: {e.Message}");
+            }
+        }
+
+        private void Replace(string pattern, string repl, bool globalFlag)
+        {
+            try
+            {
+                Regex re = new Regex(pattern);
+                bool changed = false;
+                for (int i = 0; i < lines.Count; i++)
+                {
+                    string newLine = globalFlag ? re.Replace(lines[i], repl) : re.Replace(lines[i], repl, 1);
+                    if (newLine != lines[i])
+                    {
+                        lines[i] = newLine;
+                        changed = true;
+                        if (!globalFlag) break;
+                    }
+                }
+                if (changed)
+                {
+                    modified = true;
+                    Console.WriteLine("Replaced.");
+                }
+                else
+                {
+                    Console.WriteLine("Pattern not found.");
+                }
+            }
+            catch (ArgumentException e)
+            {
+                Console.WriteLine($"Regex error: {e.Message}");
+            }
+        }
+
+        public void Run()
+        {
+            Display();
+            while (true)
+            {
+                Console.Write("> ");
+                string cmd = Console.ReadLine()?.Trim();
+                if (string.IsNullOrEmpty(cmd))
+                {
+                    Display();
+                    continue;
+                }
+                if (cmd[0] == ':')
+                {
+                    string rest = cmd.Substring(1);
+                    if (rest == "help")
+                    {
+                        Console.WriteLine("Commands: :help, :list, :e <num>, :i <num>, :d <num>, :w [file], :q, :wq, :s/old/new/g, :/pattern");
+                    }
+                    else if (rest == "list" || rest == "p")
+                    {
+                        Display();
+                    }
+                    else if (rest == "q")
+                    {
+                        if (modified)
+                        {
+                            Console.Write("Changes not saved. Quit anyway? (y/N) ");
+                            string ans = Console.ReadLine();
+                            if (ans?.ToLower() != "y") continue;
+                        }
+                        Console.WriteLine("Goodbye.");
+                        break;
+                    }
+                    else if (rest == "wq")
+                    {
+                        if (Save(null)) break;
+                    }
+                    else if (rest.StartsWith("w "))
+                    {
+                        Save(rest.Substring(2));
+                    }
+                    else if (rest == "w")
+                    {
+                        Save(null);
+                    }
+                    else if (rest.StartsWith("e "))
+                    {
+                        if (int.TryParse(rest.Substring(2), out int num))
+                            EditLine(num);
+                        else Console.WriteLine("Need a number");
+                    }
+                    else if (rest.StartsWith("i "))
+                    {
+                        if (int.TryParse(rest.Substring(2), out int pos))
+                            InsertLine(pos);
+                        else Console.WriteLine("Need a number");
+                    }
+                    else if (rest.StartsWith("d "))
+                    {
+                        if (int.TryParse(rest.Substring(2), out int num))
+                            DeleteLine(num);
+                        else Console.WriteLine("Need a number");
+                    }
+                    else if (rest.StartsWith("/"))
+                    {
+                        Search(rest.Substring(1));
+                    }
+                    else if (rest.StartsWith("s/"))
+                    {
+                        Match m = Regex.Match(rest, @"^s/(.*?)/(.*?)/(g?)$");
+                        if (m.Success)
+                        {
+                            Replace(m.Groups[1].Value, m.Groups[2].Value, m.Groups[3].Value == "g");
+                        }
+                        else
+                        {
+                            Console.WriteLine("Invalid syntax. Use :s/old/new/g");
+                        }
+                    }
+                    else
+                    {
+                        Console.WriteLine("Unknown command. :help");
+                    }
+                }
+                else
+                {
+                    if (int.TryParse(cmd, out int num))
+                        EditLine(num);
+                    else
+                        Console.WriteLine("Unknown command. Type :help");
+                }
+            }
+        }
+
+        public static void Main(string[] args)
+        {
+            string filename = args.Length > 0 ? args[0] : null;
+            Editor editor = new Editor(filename);
+            editor.Run();
+        }
+    }
+}
